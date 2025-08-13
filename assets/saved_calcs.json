@@ -19,5 +19,22 @@
   "Square": [],
   "Rectangle": [],
   "Oval": [],
-  "Triangle": []
+  "Triangle": [
+    {
+      "shape": "Triangle",
+      "inputs": {
+        "side": 25.0
+      },
+      "thickness": 1.0,
+      "density": 7850,
+      "weight": 0.3743712015474463,
+      "area_mm2": 47.690598923241566,
+      "extra": {
+        "mother_OD": 16.180389115293835,
+        "mother_ID": 14.180389115293835
+      },
+      "dimensions_str": "Equilateral 25.0 \u00d7 t 1.0 mm",
+      "name": "Triangle | Equilateral 25.0 \u00d7 t 1.0 mm"
+    }
+  ]
 }
