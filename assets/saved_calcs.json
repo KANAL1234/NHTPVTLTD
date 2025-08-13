@@ -3,21 +3,6 @@
     {
       "shape": "Circle",
       "inputs": {
-        "OD": 25.0
-      },
-      "thickness": 1.0,
-      "density": 7850,
-      "weight": 0.591876055936317,
-      "area_mm2": 75.39822368615503,
-      "extra": {
-        "ID": 23.0
-      },
-      "dimensions_str": "OD 25.0 \u00d7 t 1.0 mm",
-      "name": "Circle | OD 25.0 \u00d7 t 1.0 mm"
-    },
-    {
-      "shape": "Circle",
-      "inputs": {
         "OD": 23.5
       },
       "thickness": 1.0,
