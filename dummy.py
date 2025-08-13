@@ -31,11 +31,14 @@ st.markdown(
         margin-bottom: 0.75rem;
       }
       /* widen inputs/buttons inside the save panel */
-      .save-panel .stTextInput, .save-panel .stButton {
-        max-width: 1000px;
+      .save-panel label {
+        margin-top: -10px !important;
+        padding-top: 0 !important;
       }
-      /* give the big panel a little breathing room */
-      .block-container { padding-top: 1rem; }
+      .save-panel .stTextInput {
+        margin-top: -1.2rem !important;
+        padding-top: 0 !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
