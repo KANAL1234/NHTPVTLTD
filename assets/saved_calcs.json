@@ -14,21 +14,6 @@
       },
       "dimensions_str": "OD 100.0 \u00d7 t 1.0 mm",
       "name": "Circle | OD 100.0 \u00d7 t 1.0 mm"
-    },
-    {
-      "shape": "Circle",
-      "inputs": {
-        "OD": 20.0
-      },
-      "thickness": 1.0,
-      "density": 7850,
-      "weight": 0.4685685442829176,
-      "area_mm2": 59.690260418206066,
-      "extra": {
-        "ID": 18.0
-      },
-      "dimensions_str": "OD 20.0 \u00d7 t 1.0 mm",
-      "name": "Circle | OD 20.0 \u00d7 t 1.0 mm"
     }
   ],
   "Square": [],
