@@ -102,44 +102,26 @@ for s in SHAPES:
                         st.session_state.saved[s].pop(idx)
                         st.rerun()
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Logo (top-right)")
 
-# 1) Upload (highest priority)
-logo_file = st.sidebar.file_uploader("Upload logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
-if logo_file:
+
+# ----------------------------
+# Logo from repo only
+# ----------------------------
+from pathlib import Path
+from PIL import Image
+
+# Path to the logo file inside the repo
+REPO_LOGO_PATH = Path("assets/logo.png")  # Change path if needed
+
+# Load the logo once at startup
+logo_img = None
+if REPO_LOGO_PATH.exists() and REPO_LOGO_PATH.is_file():
     try:
-        st.session_state.logo_img = Image.open(BytesIO(logo_file.read()))
-        st.sidebar.success("Logo loaded from upload.")
-    except Exception:
-        st.sidebar.error("Could not load uploaded image.")
-
-# 2) Repo asset path (e.g., assets/logo.png)
-repo_logo_path_str = st.sidebar.text_input("Repo logo path", value=str(DEFAULT_REPO_LOGO_PATH))
-if st.sidebar.button("Load from repo path"):
-    p = Path(repo_logo_path_str)
-    if p.exists() and p.is_file():
-        try:
-            st.session_state.logo_img = Image.open(p)
-            st.sidebar.success(f"Logo loaded from repo file: {p}")
-        except Exception:
-            st.sidebar.error("File found but could not open as image.")
-    else:
-        st.sidebar.error("Repo path not found in app directory. Ensure the file is committed to the repo.")
-
-# 3) GitHub RAW URL (e.g., https://raw.githubusercontent.com/user/repo/branch/assets/logo.png)
-raw_url = st.sidebar.text_input("GitHub RAW URL (optional)", value="")
-if st.sidebar.button("Fetch from RAW URL"):
-    if raw_url.strip():
-        try:
-            resp = requests.get(raw_url.strip(), timeout=10)
-            resp.raise_for_status()
-            st.session_state.logo_img = Image.open(BytesIO(resp.content))
-            st.sidebar.success("Logo loaded from GitHub RAW URL.")
-        except Exception as e:
-            st.sidebar.error(f"Fetch failed: {e}")
-
-st.sidebar.caption("Priority: Upload > Repo path > RAW URL > fallback logo.png")
+        logo_img = Image.open(REPO_LOGO_PATH)
+    except Exception as e:
+        st.warning(f"Could not load logo from {REPO_LOGO_PATH}: {e}")
+else:
+    st.warning(f"Logo file not found at {REPO_LOGO_PATH}")
 
 # ----------------------------
 # Header with Logo at Top-Right
@@ -148,28 +130,9 @@ col_title, col_logo = st.columns([4, 1])
 with col_title:
     st.title("Pipe & Hollow Section Weight Calculator")
 with col_logo:
-    shown = False
-    if st.session_state.logo_img is not None:
-        st.image(st.session_state.logo_img, use_container_width=True)
-        shown = True
-    else:
-        # Auto-try default repo path
-        if DEFAULT_REPO_LOGO_PATH.exists():
-            try:
-                st.image(Image.open(DEFAULT_REPO_LOGO_PATH), use_container_width=True)
-                shown = True
-            except Exception:
-                pass
-        # Fallback to local root logo.png
-        if not shown and Path("logo.png").exists():
-            try:
-                st.image("logo.png", use_container_width=True)
-                shown = True
-            except Exception:
-                pass
-
-st.write("Calculate weight per meter and (for non-circular shapes) the equivalent circular **mother pipe** OD.")
-
+    if logo_img:
+        st.image(logo_img, use_container_width=True)
+        
 # ----------------------------
 # Inputs
 # ----------------------------
