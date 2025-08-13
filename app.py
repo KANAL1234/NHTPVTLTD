@@ -22,7 +22,6 @@ st.set_page_config(page_title="Pipe & Hollow Section Calculator", layout="wide")
 st.markdown(
     """
     <style>
-      /* make the central content a bit wider visually */
       .save-panel {
         padding: 1rem 1.25rem;
         border: 1px solid rgba(49,51,63,0.2);
@@ -30,12 +29,15 @@ st.markdown(
         margin-top: 0.75rem;
         margin-bottom: 0.75rem;
       }
-      /* widen inputs/buttons inside the save panel */
-      .save-panel .stTextInput, .save-panel .stButton {
-        max-width: 1000px;
+      /* tighten spacing for the Name input */
+      .save-panel label {
+        margin-top: -10px !important;
+        padding-top: 0 !important;
       }
-      /* give the big panel a little breathing room */
-      .block-container { padding-top: 1rem; }
+      .save-panel .stTextInput {
+        margin-top: -1.2rem !important;
+        padding-top: 0 !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
