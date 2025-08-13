@@ -1,21 +1,5 @@
 {
-  "Circle": [
-    {
-      "shape": "Circle",
-      "inputs": {
-        "OD": 100.0
-      },
-      "thickness": 1.0,
-      "density": 7850,
-      "weight": 2.4414887307373077,
-      "area_mm2": 311.01767270538954,
-      "extra": {
-        "ID": 98.0
-      },
-      "dimensions_str": "OD 100.0 \u00d7 t 1.0 mm",
-      "name": "Circle | OD 100.0 \u00d7 t 1.0 mm"
-    }
-  ],
+  "Circle": [],
   "Square": [],
   "Rectangle": [],
   "Oval": [],
