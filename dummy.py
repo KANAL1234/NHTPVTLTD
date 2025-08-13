@@ -28,7 +28,6 @@ st.markdown(
         border: 1px solid rgba(49,51,63,0.2);
         border-radius: 10px;
         margin-top: 0.75rem;
-        margin-bottom: 0.75rem;
       }
       /* widen inputs/buttons inside the save panel */
       .save-panel label {
