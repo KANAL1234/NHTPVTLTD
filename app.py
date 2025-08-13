@@ -60,7 +60,7 @@ def mother_pipe_diameter(area_mm2, thickness):
     return OD
 
 # ----- Streamlit UI -----
-st.title("Pipe & Hollow Section Weight Calculator + Mother Pipe Size")
+st.title("HOLLOW PIPE WEIGHT CALCULATOR")
 
 shape = st.selectbox(
     "Select Shape",
