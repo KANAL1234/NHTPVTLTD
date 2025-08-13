@@ -5,98 +5,127 @@ import base64
 from pathlib import Path
 from PIL import Image
 import requests
-from io import BytesIO
 
 # =========================================
-# Constants
+# Hardcoded repo settings for Kanal
+# =========================================
+OWNER_REPO = "KANAL1234/NHTPVTLTD"
+BRANCH = "main"
+GH_FILEPATH = "assets/saved_calcs.json"
+REPO_LOGO_PATH = Path("assets/logo.png")  # repo-only logo
+
+# =========================================
+# App constants
 # =========================================
 DENSITY_MS = 7850
 SHAPES = ["Circle", "Square", "Rectangle", "Oval", "Triangle"]
-
-REPO_LOGO_PATH = Path("assets/logo.png")
-SAVED_LOCAL_PATH = Path("assets/saved_calcs.json")  # file tracked in repo
+LOCAL_SAVED_PATH = Path(GH_FILEPATH)  # same path inside app filesystem
 
 # =========================================
-# GitHub Helpers (Contents API)
+# GitHub API helpers
 # =========================================
-def have_github_secrets():
-    needed = ("GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_FILEPATH")
-    return all(k in st.secrets for k in needed)
+def have_token():
+    return "GITHUB_TOKEN" in st.secrets and bool(st.secrets["GITHUB_TOKEN"])
 
-def gh_headers(token: str):
+def _headers():
     return {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json"
+        "Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}",
+        "Accept": "application/vnd.github+json",
     }
 
-def gh_get_file_sha(token: str, repo: str, path: str, branch: str):
-    url = f"https://api.github.com/repos/{repo}/contents/{path}"
+def gh_get_contents_json(repo_path: str, branch: str):
+    """Fetch file JSON (metadata+content) via GitHub Contents API."""
+    url = f"https://api.github.com/repos/{OWNER_REPO}/contents/{repo_path}"
     params = {"ref": branch} if branch else {}
-    r = requests.get(url, headers=gh_headers(token), params=params, timeout=15)
+    r = requests.get(url, headers=_headers(), params=params, timeout=20)
     if r.status_code == 200:
-        return r.json().get("sha")
-    return None  # file may not exist yet
+        return r.json()
+    return None
 
-def gh_put_file(token: str, repo: str, path: str, content_bytes: bytes, message: str, branch: str, sha: str | None):
-    url = f"https://api.github.com/repos/{repo}/contents/{path}"
-    data = {
+def gh_get_file_sha(repo_path: str, branch: str):
+    data = gh_get_contents_json(repo_path, branch)
+    return data.get("sha") if data else None
+
+def gh_download_text(repo_path: str, branch: str):
+    data = gh_get_contents_json(repo_path, branch)
+    if not data:
+        return None
+    content_b64 = data.get("content", "")
+    encoding = data.get("encoding", "")
+    if encoding == "base64" and content_b64:
+        try:
+            return base64.b64decode(content_b64).decode("utf-8")
+        except Exception:
+            return None
+    # fallback to raw URL
+    raw_url = f"https://raw.githubusercontent.com/{OWNER_REPO}/{branch}/{repo_path}"
+    r = requests.get(raw_url, timeout=20)
+    return r.text if r.ok else None
+
+def gh_put_file(repo_path: str, branch: str, content_bytes: bytes, message: str):
+    url = f"https://api.github.com/repos/{OWNER_REPO}/contents/{repo_path}"
+    payload = {
         "message": message,
         "content": base64.b64encode(content_bytes).decode("utf-8"),
+        "branch": branch,
     }
-    if branch:
-        data["branch"] = branch
+    sha = gh_get_file_sha(repo_path, branch)
     if sha:
-        data["sha"] = sha
-    r = requests.put(url, headers=gh_headers(token), json=data, timeout=20)
+        payload["sha"] = sha
+    r = requests.put(url, headers=_headers(), json=payload, timeout=30)
     r.raise_for_status()
-    return r.json()
+    return True
 
 # =========================================
-# Load / Save Saved Calculations
+# Saved calcs load/save
 # =========================================
-def ensure_saved_structure(d: dict):
-    """Make sure dict has buckets for each SHAPE."""
-    out = {s: [] for s in SHAPES}
+def empty_saved():
+    return {s: [] for s in SHAPES}
+
+def normalize_saved(d):
+    out = empty_saved()
     if isinstance(d, dict):
         for s in SHAPES:
-            if s in d and isinstance(d[s], list):
+            if isinstance(d.get(s), list):
                 out[s] = d[s]
     return out
 
-def load_saved_from_local() -> dict:
-    if SAVED_LOCAL_PATH.exists():
+def load_saved():
+    """Priority: GitHub (if token) -> local file -> empty."""
+    # Try GitHub
+    if have_token():
+        txt = gh_download_text(GH_FILEPATH, BRANCH)
+        if txt:
+            try:
+                return normalize_saved(json.loads(txt))
+            except Exception:
+                pass
+    # Try local file (repo file present on deploy)
+    if LOCAL_SAVED_PATH.exists():
         try:
-            with open(SAVED_LOCAL_PATH, "r", encoding="utf-8") as f:
-                return ensure_saved_structure(json.load(f))
+            with open(LOCAL_SAVED_PATH, "r", encoding="utf-8") as f:
+                return normalize_saved(json.load(f))
         except Exception:
             pass
-    return ensure_saved_structure({})
+    return empty_saved()
 
-def write_saved_to_local(saved: dict):
-    SAVED_LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(SAVED_LOCAL_PATH, "w", encoding="utf-8") as f:
+def save_local(saved):
+    LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCAL_SAVED_PATH, "w", encoding="utf-8") as f:
         json.dump(saved, f, indent=2)
 
-def push_saved_to_github(saved: dict) -> tuple[bool, str]:
-    """Push JSON to GitHub if secrets are configured."""
-    if not have_github_secrets():
-        return False, "GitHub secrets not configured; skipped GitHub push."
-
-    token   = st.secrets["GITHUB_TOKEN"]
-    repo    = st.secrets["GITHUB_REPO"]
-    branch  = st.secrets.get("GITHUB_BRANCH", "main")
-    path    = st.secrets["GITHUB_FILEPATH"]
-
-    content = json.dumps(saved, indent=2).encode("utf-8")
+def save_github(saved):
+    if not have_token():
+        return False, "GitHub token not set in secrets; saved locally only."
     try:
-        sha = gh_get_file_sha(token, repo, path, branch)
-        gh_put_file(token, repo, path, content, "Update saved_calcs from Streamlit app", branch, sha)
-        return True, "Saved to GitHub."
+        content = json.dumps(saved, indent=2).encode("utf-8")
+        gh_put_file(GH_FILEPATH, BRANCH, content, "Update saved_calcs via Streamlit app")
+        return True, "Saved & synced to GitHub."
     except Exception as e:
         return False, f"GitHub push failed: {e}"
 
 # =========================================
-# Geometry / Weight Functions
+# Geometry / weight functions
 # =========================================
 def weight_circle(OD, thickness, density):
     ID = OD - 2 * thickness
@@ -151,40 +180,35 @@ def mother_pipe_diameter(area_mm2, thickness):
     return (area_mm2 / (math.pi * thickness)) + thickness
 
 # =========================================
-# Session Init: Saved + Logo
+# Session boot
 # =========================================
 if "saved" not in st.session_state:
-    st.session_state.saved = load_saved_from_local()  # bootstrap from repo file
-
-# Read logo from repo only
-logo_img = None
-if REPO_LOGO_PATH.exists() and REPO_LOGO_PATH.is_file():
-    try:
-        logo_img = Image.open(REPO_LOGO_PATH)
-    except Exception as e:
-        st.warning(f"Could not load logo: {e}")
-else:
-    st.warning(f"Logo file not found at {REPO_LOGO_PATH}")
+    st.session_state.saved = load_saved()
 
 # =========================================
-# UI: Header
+# Header (logo from repo only)
 # =========================================
 col_title, col_logo = st.columns([4, 1])
 with col_title:
     st.title("Pipe & Hollow Section Weight Calculator")
 with col_logo:
-    if logo_img:
-        st.image(logo_img, use_container_width=True)
+    if REPO_LOGO_PATH.exists():
+        try:
+            st.image(Image.open(REPO_LOGO_PATH), use_container_width=True)
+        except Exception as e:
+            st.warning(f"Logo error: {e}")
+    else:
+        st.caption("Add assets/logo.png to your repo for a header logo.")
 
-st.caption("Calculates weight per meter and (for non-circular shapes) the equivalent circular **mother pipe** OD.")
+st.caption("Calculates weight per meter and, for non-circular shapes, the equivalent circular mother pipe OD.")
 
 # =========================================
-# Sidebar: Saved Items
+# Sidebar: saved items
 # =========================================
 st.sidebar.header("Saved Calculations")
 for s in SHAPES:
     entries = st.session_state.saved.get(s, [])
-    with st.sidebar.expander(f"{s} ({len(entries)})", expanded=(len(entries) > 0)):
+    with st.sidebar.expander(f"{s} ({len(entries)})", expanded=False):
         if not entries:
             st.caption("No saved items yet.")
         else:
@@ -202,14 +226,9 @@ for s in SHAPES:
                 with cols[1]:
                     if st.button("🗑️", key=f"del_{s}_{idx}"):
                         st.session_state.saved[s].pop(idx)
-                        # persist deletion locally
-                        write_saved_to_local(st.session_state.saved)
-                        # try to push to GitHub
-                        ok, msg = push_saved_to_github(st.session_state.saved)
-                        if ok:
-                            st.toast("Deleted and synced to GitHub.")
-                        else:
-                            st.toast(msg)
+                        save_local(st.session_state.saved)
+                        ok, msg = save_github(st.session_state.saved)
+                        st.toast(msg)
                         st.rerun()
 
 # =========================================
@@ -218,30 +237,32 @@ for s in SHAPES:
 shape = st.selectbox("Select Shape", SHAPES, key="shape")
 
 loaded_inputs = st.session_state.get("current_inputs", {})
-loaded_thk = st.session_state.get("current_thickness", 1.0)
-loaded_den = st.session_state.get("current_density", DENSITY_MS)
+loaded_thk = float(st.session_state.get("current_thickness", 1.0))
+loaded_den = int(st.session_state.get("current_density", DENSITY_MS))
 
-thickness = st.number_input("Wall Thickness (mm)", min_value=0.1, value=float(loaded_thk), step=0.1, key="thk_input")
-density   = st.number_input("Material Density (kg/m³)", min_value=1000, value=int(loaded_den), step=50, key="den_input")
+thickness = st.number_input("Wall Thickness (mm)", min_value=0.1, value=loaded_thk, step=0.1, key="thk_input")
+density   = st.number_input("Material Density (kg/m³)", min_value=1000, value=loaded_den, step=50, key="den_input")
 
 if shape == "Circle":
-    OD = st.number_input("Outer Diameter (mm)", min_value=1.0, value=float(loaded_inputs.get("OD", 25.0)), step=0.5, key="circle_OD")
-
+    OD = st.number_input("Outer Diameter (mm)", min_value=1.0,
+                         value=float(loaded_inputs.get("OD", 25.0)), step=0.5, key="circle_OD")
 elif shape == "Square":
-    OD = st.number_input("Outer Side (mm)", min_value=1.0, value=float(loaded_inputs.get("OD", 25.0)), step=0.5, key="square_OD")
-
+    OD = st.number_input("Outer Side (mm)", min_value=1.0,
+                         value=float(loaded_inputs.get("OD", 25.0)), step=0.5, key="square_OD")
 elif shape == "Rectangle":
-    L = st.number_input("Outer Length (mm)", min_value=1.0, value=float(loaded_inputs.get("L", 40.0)), step=0.5, key="rect_L")
-    W = st.number_input("Outer Width (mm)", min_value=1.0, value=float(loaded_inputs.get("W", 25.0)), step=0.5, key="rect_W")
-
+    L = st.number_input("Outer Length (mm)", min_value=1.0,
+                        value=float(loaded_inputs.get("L", 40.0)), step=0.5, key="rect_L")
+    W = st.number_input("Outer Width (mm)", min_value=1.0,
+                        value=float(loaded_inputs.get("W", 25.0)), step=0.5, key="rect_W")
 elif shape == "Oval":
-    major = st.number_input("Outer Major Axis (mm)", min_value=1.0, value=float(loaded_inputs.get("major", 40.0)), step=0.5, key="oval_major")
-    minor = st.number_input("Outer Minor Axis (mm)", min_value=1.0, value=float(loaded_inputs.get("minor", 25.0)), step=0.5, key="oval_minor")
-
+    major = st.number_input("Outer Major Axis (mm)", min_value=1.0,
+                            value=float(loaded_inputs.get("major", 40.0)), step=0.5, key="oval_major")
+    minor = st.number_input("Outer Minor Axis (mm)", min_value=1.0,
+                            value=float(loaded_inputs.get("minor", 25.0)), step=0.5, key="oval_minor")
 elif shape == "Triangle":
-    side = st.number_input("Outer Side Length (mm)", min_value=1.0, value=float(loaded_inputs.get("side", 25.0)), step=0.5, key="tri_side")
+    side = st.number_input("Outer Side Length (mm)", min_value=1.0,
+                           value=float(loaded_inputs.get("side", 25.0)), step=0.5, key="tri_side")
 
-# clear load trigger after widgets render
 if st.session_state.get("trigger_load"):
     st.session_state["trigger_load"] = False
 
@@ -249,9 +270,9 @@ if st.session_state.get("trigger_load"):
 # Calculate
 # =========================================
 if st.button("Calculate", type="primary"):
-    result = {}
     t = st.session_state["thk_input"]
     den = st.session_state["den_input"]
+    result = {}
 
     if shape == "Circle":
         w, area, ID = weight_circle(st.session_state["circle_OD"], t, den)
@@ -332,7 +353,7 @@ if st.button("Calculate", type="primary"):
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
         st.info(f"Mother Pipe OD: **{mp_od:.2f} mm**, ID: **{mp_od - 2*t:.2f} mm**")
 
-    # ------- Save section -------
+    # ---- Save area ----
     st.markdown("---")
     st.subheader("Save this calculation")
     default_name = f"{result['shape']} | {result['dimensions_str']}"
@@ -349,19 +370,18 @@ if st.button("Calculate", type="primary"):
             "extra": result["extra"],
             "dimensions_str": result["dimensions_str"],
         }
-        # Save in session
         st.session_state.saved[result["shape"]].append(record)
 
-        # Write to local file (works locally / also shows up in build artifact)
+        # persist to local JSON (works locally and inside session container)
         try:
-            write_saved_to_local(st.session_state.saved)
-            st.toast("Saved to local file.")
+            save_local(st.session_state.saved)
+            st.toast("Saved locally.")
         except Exception as e:
             st.warning(f"Local save failed: {e}")
 
-        # Push to GitHub (if secrets configured)
-        ok, msg = push_saved_to_github(st.session_state.saved)
+        # push to GitHub (token required in secrets)
+        ok, msg = save_github(st.session_state.saved)
         if ok:
-            st.success("Saved & synced to GitHub.")
+            st.success(msg)
         else:
             st.info(msg)
