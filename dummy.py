@@ -1,6 +1,7 @@
 # app.py
 # Pipe & Hollow Section Weight Calculator
-# - Persists to GitHub JSON and auto-reloads from repo after save
+# - Persists to GitHub (assets/saved_calcs.json)
+# - Reloads from repo after save, shows commit link
 # - Repo-only logo (assets/logo.png)
 
 import base64
@@ -18,7 +19,7 @@ from PIL import Image
 # ============================================================
 OWNER_REPO = "KANAL1234/NHTPVTLTD"        # <owner>/<repo>
 BRANCH = "main"                           # branch to read/write
-GH_FILEPATH = "assets/saved_calcs.json"   # JSON persisted file
+GH_FILEPATH = "assets/saved_calcs.json"   # JSON persisted file (in repo)
 REPO_LOGO_PATH = Path("assets/logo.png")  # logo path inside repo
 
 # ============================================================
@@ -29,7 +30,7 @@ SHAPES = ["Circle", "Square", "Rectangle", "Oval", "Triangle"]
 LOCAL_SAVED_PATH = Path(GH_FILEPATH)  # local mirror path
 
 # ============================================================
-# GITHUB API HELPERS (with readable errors)
+# GITHUB API HELPERS (with readable errors + commit URL)
 # ============================================================
 def token_present() -> bool:
     return "GITHUB_TOKEN" in st.secrets and bool(st.secrets["GITHUB_TOKEN"])
@@ -79,10 +80,10 @@ def gh_download_text(path: str, branch: str) -> tuple[bool, str]:
     else:
         return False, f"{r.status_code} {r.reason}: {r.text[:600]}"
 
-def gh_put_file(path: str, branch: str, content_bytes: bytes, message: str) -> tuple[bool, str]:
+def gh_put_file_with_commit(path: str, branch: str, content_bytes: bytes, message: str):
     """
-    Create/update a file through GitHub Contents API.
-    Returns (ok, message)
+    Create/update file via Contents API.
+    Returns (ok, info) where info includes commit URL.
     """
     url = gh_contents_url(path)
     payload = {
@@ -95,9 +96,18 @@ def gh_put_file(path: str, branch: str, content_bytes: bytes, message: str) -> t
         payload["sha"] = sha
 
     r = requests.put(url, headers=gh_headers(), json=payload, timeout=30)
-    if 200 <= r.status_code < 300:
-        return True, "Saved & synced to GitHub."
-    return False, f"GitHub push failed [{r.status_code} {r.reason}]: {r.text[:600]}"
+    info = {"status": r.status_code, "reason": r.reason, "text": (r.text or "")[:1200]}
+    try:
+        j = r.json()
+    except Exception:
+        j = {}
+    # Pull commit info if present
+    commit_sha = (j.get("commit") or {}).get("sha") if isinstance(j, dict) else None
+    commit_html = (j.get("commit") or {}).get("html_url") if isinstance(j, dict) else None
+    if not commit_html and commit_sha:
+        commit_html = f"https://github.com/{OWNER_REPO}/commit/{commit_sha}"
+    info.update({"json": j, "commit_sha": commit_sha, "commit_url": commit_html})
+    return (200 <= r.status_code < 300), info
 
 # ============================================================
 # SAVED CALCS (LOAD/SAVE)
@@ -144,24 +154,38 @@ def write_local(saved: dict) -> tuple[bool, str]:
 
 def save_to_repo_and_reload(saved: dict) -> tuple[bool, str]:
     """
-    Push current 'saved' to GitHub and immediately reload fresh data
-    from the repo, then update st.session_state.saved.
+    Push current 'saved' to GitHub and immediately reload from the repo.
+    Shows commit link in the success message if available.
     """
     if not token_present():
-        return False, "GitHub token missing in secrets (GITHUB_TOKEN)."
+        return False, "GITHUB_TOKEN missing in Streamlit secrets."
 
     content = json.dumps(saved, indent=2).encode("utf-8")
-    ok, msg = gh_put_file(GH_FILEPATH, BRANCH, content, "Update saved_calcs via Streamlit app")
+    ok, info = gh_put_file_with_commit(GH_FILEPATH, BRANCH, content, "Update saved_calcs via Streamlit app")
     if not ok:
-        return False, msg
+        return False, f"GitHub push failed [{info.get('status')} {info.get('reason')}]: {info.get('text')}"
 
-    # Small delay helps avoid race with GitHub read-after-write
-    time.sleep(0.5)
+    # Slight delay to avoid read-after-write race
+    time.sleep(0.6)
 
-    # Reload from repo to reflect canonical state
-    fresh = load_saved_from_repo_or_local()
-    st.session_state.saved = fresh
-    return True, "Saved to GitHub and reloaded from repo."
+    # Reload from RAW
+    raw_url = f"https://raw.githubusercontent.com/{OWNER_REPO}/{BRANCH}/{GH_FILEPATH}"
+    rr = requests.get(raw_url, timeout=20)
+    if not rr.ok:
+        return False, f"Reload failed: {rr.status_code} {rr.reason}"
+
+    try:
+        fresh = json.loads(rr.text)
+    except Exception as e:
+        return False, f"Reload parse failed: {e}"
+
+    # Normalize and update session
+    st.session_state.saved = normalize_saved(fresh)
+
+    msg = "Saved to GitHub and reloaded."
+    if info.get("commit_url"):
+        msg += f" Commit: {info['commit_url']}"
+    return True, msg
 
 # ============================================================
 # GEOMETRY / WEIGHT FUNCTIONS
@@ -266,10 +290,13 @@ for s in SHAPES:
                 with cols[1]:
                     if st.button("🗑️", key=f"del_{s}_{idx}"):
                         st.session_state.saved[s].pop(idx)
-                        # Persist local + repo and reload
-                        _okL, _msgL = write_local(st.session_state.saved)
+                        # Persist locally (optional) then GitHub and reload
+                        try:
+                            _okL, _msgL = write_local(st.session_state.saved)
+                            st.toast(_msgL)
+                        except Exception:
+                            pass
                         okG, msgG = save_to_repo_and_reload(st.session_state.saved)
-                        st.toast(_msgL)
                         st.toast(msgG)
                         st.rerun()
 
@@ -423,18 +450,21 @@ if st.button("Calculate", type="primary"):
             "dimensions_str": result["dimensions_str"],
         }
 
-        # Append in-session first
+        # Append to in-session data first
         st.session_state.saved[result["shape"]].append(record)
 
-        # Write local (dev convenience)
-        _okL, _msgL = write_local(st.session_state.saved)
-        if _okL:
-            st.toast(_msgL)
+        # Optional local mirror (useful in local dev)
+        try:
+            _okL, _msgL = write_local(st.session_state.saved)
+            if _okL:
+                st.toast(_msgL)
+        except Exception:
+            pass
 
-        # Push to GitHub and auto-reload from repo, then rerun for fresh sidebar
+        # Push to GitHub and immediately reload from repo (canonical)
         okG, msgG = save_to_repo_and_reload(st.session_state.saved)
         if okG:
             st.success(msgG)
-            st.rerun()
+            st.rerun()  # refresh sidebar with reloaded data
         else:
             st.error(msgG)
