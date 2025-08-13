@@ -1,14 +1,16 @@
 import streamlit as st
 import requests
+import base64
+from datetime import datetime
 
 # --- SETTINGS ---
 OWNER_REPO = "KANAL1234/NHTPVTLTD"
 BRANCH = "main"
-TEST_FILE = "assets/saved_calcs.json"
+TEST_FILE = "assets/token_test.txt"
 
-st.title("🔑 GitHub Token Test")
+st.title("✍️ GitHub Token Write Test")
 
-# Check token in secrets
+# Get token
 if "GITHUB_TOKEN" not in st.secrets or not st.secrets["GITHUB_TOKEN"]:
     st.error("❌ GITHUB_TOKEN not found in Streamlit secrets.")
     st.stop()
@@ -21,40 +23,38 @@ headers = {
     "X-GitHub-Api-Version": "2022-11-28"
 }
 
-# 1️⃣ Test read permissions
-url_read = f"https://api.github.com/repos/{OWNER_REPO}/contents/{TEST_FILE}?ref={BRANCH}"
-resp_read = requests.get(url_read, headers=headers)
+# Step 1: Get current SHA (if file exists)
+url_content = f"https://api.github.com/repos/{OWNER_REPO}/contents/{TEST_FILE}?ref={BRANCH}"
+resp_content = requests.get(url_content, headers=headers)
 
-st.subheader("1️⃣ Read Test")
-st.write("GET", url_read)
-st.write("Status:", resp_read.status_code, resp_read.reason)
-try:
-    st.json(resp_read.json())
-except:
-    st.write(resp_read.text)
+sha = None
+if resp_content.status_code == 200:
+    sha = resp_content.json().get("sha")
+    st.write("ℹ️ File exists, updating...")
+else:
+    st.write("ℹ️ File does not exist, creating new one...")
 
-# 2️⃣ Test write permissions (no actual change, just check repo info)
-url_repo = f"https://api.github.com/repos/{OWNER_REPO}"
-resp_repo = requests.get(url_repo, headers=headers)
+# Step 2: Prepare new content
+new_text = f"Token write test at {datetime.utcnow().isoformat()} UTC"
+encoded_content = base64.b64encode(new_text.encode()).decode()
 
-st.subheader("2️⃣ Repo Access Test")
-st.write("GET", url_repo)
-st.write("Status:", resp_repo.status_code, resp_repo.reason)
-try:
-    st.json(resp_repo.json())
-except:
-    st.write(resp_repo.text)
+# Step 3: Push to GitHub
+url_put = f"https://api.github.com/repos/{OWNER_REPO}/contents/{TEST_FILE}"
+payload = {
+    "message": "Token write test commit",
+    "content": encoded_content,
+    "branch": BRANCH
+}
+if sha:
+    payload["sha"] = sha
 
-# 3️⃣ Test commit creation (dry-run using /git/refs)
-url_refs = f"https://api.github.com/repos/{OWNER_REPO}/git/refs/heads/{BRANCH}"
-resp_refs = requests.get(url_refs, headers=headers)
+resp_put = requests.put(url_put, headers=headers, json=payload)
 
-st.subheader("3️⃣ Branch Ref Test")
-st.write("GET", url_refs)
-st.write("Status:", resp_refs.status_code, resp_refs.reason)
-try:
-    st.json(resp_refs.json())
-except:
-    st.write(resp_refs.text)
-
-st.info("✅ If all three tests return 200 OK and show valid JSON, your token works.")
+# Step 4: Show result
+if resp_put.status_code in (200, 201):
+    st.success("✅ Write successful!")
+    st.json(resp_put.json())
+    st.markdown(f"[View file in GitHub](https://github.com/{OWNER_REPO}/blob/{BRANCH}/{TEST_FILE})")
+else:
+    st.error(f"❌ Write failed with {resp_put.status_code}")
+    st.write(resp_put.text)
