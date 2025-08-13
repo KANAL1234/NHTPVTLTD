@@ -1,7 +1,8 @@
 # app.py
 # Pipe & Hollow Section Weight Calculator
-# - FIXED: Calculate stores to session; Save panel is outside the Calculate block
-# - Persists to GitHub (assets/saved_calcs.json), reloads from RAW, shows commit link
+# - After Save: updates sidebar list immediately (no repo reload)
+# - Pushes to GitHub (assets/saved_calcs.json) and shows commit link
+# - Wider Save panel styling
 # - Repo-only logo (assets/logo.png)
 
 import base64
@@ -15,23 +16,48 @@ import streamlit as st
 from PIL import Image
 
 # ============================================================
+# PAGE CONFIG & WIDE SAVE PANEL STYLES
+# ============================================================
+st.set_page_config(page_title="Pipe & Hollow Section Calculator", layout="wide")
+st.markdown(
+    """
+    <style>
+      /* make the central content a bit wider visually */
+      .save-panel {
+        padding: 1rem 1.25rem;
+        border: 1px solid rgba(49,51,63,0.2);
+        border-radius: 10px;
+        margin-top: 0.75rem;
+        margin-bottom: 0.75rem;
+      }
+      /* widen inputs/buttons inside the save panel */
+      .save-panel .stTextInput, .save-panel .stButton {
+        max-width: 1000px;
+      }
+      /* give the big panel a little breathing room */
+      .block-container { padding-top: 1rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ============================================================
 # HARD-CODED REPO SETTINGS (YOURS)
 # ============================================================
 OWNER_REPO = "KANAL1234/NHTPVTLTD"        # <owner>/<repo>
 BRANCH = "main"                           # branch to read/write
 GH_FILEPATH = "assets/saved_calcs.json"   # JSON persisted file (in repo)
 REPO_LOGO_PATH = Path("assets/logo.png")  # logo path inside repo
-RAW_URL = f"https://raw.githubusercontent.com/{OWNER_REPO}/{BRANCH}/{GH_FILEPATH}"
 
 # ============================================================
 # APP CONSTANTS
 # ============================================================
 DENSITY_MS = 7850
 SHAPES = ["Circle", "Square", "Rectangle", "Oval", "Triangle"]
-LOCAL_SAVED_PATH = Path(GH_FILEPATH)  # local mirror path (optional)
+LOCAL_SAVED_PATH = Path(GH_FILEPATH)  # optional local mirror (dev)
 
 # ============================================================
-# GITHUB API HELPERS (with commit URL + readback)
+# GITHUB API HELPERS (push-only; no reload)
 # ============================================================
 def token_present() -> bool:
     return "GITHUB_TOKEN" in st.secrets and bool(st.secrets["GITHUB_TOKEN"])
@@ -55,30 +81,10 @@ def gh_get_file_sha(path: str, branch: str):
             return None
     return None
 
-def gh_download_text(path: str, branch: str) -> tuple[bool, str]:
-    """
-    Returns (ok, text_or_error)
-    """
-    r = requests.get(gh_contents_url(path), headers=gh_headers(), params={"ref": branch}, timeout=20)
-    if r.status_code == 200:
-        try:
-            body = r.json()
-            if body.get("encoding") == "base64":
-                content_b64 = body.get("content", "")
-                return True, base64.b64decode(content_b64).decode("utf-8")
-            rr = requests.get(RAW_URL, timeout=20)
-            if rr.ok:
-                return True, rr.text
-            return False, f"RAW fetch failed: {rr.status_code} {rr.reason}"
-        except Exception as e:
-            return False, f"Decode error: {e}"
-    else:
-        return False, f"{r.status_code} {r.reason}: {r.text[:600]}"
-
 def gh_put_file_with_commit(path: str, branch: str, content_bytes: bytes, message: str):
     """
     Create/update file via Contents API.
-    Returns (ok, info) where info includes commit URL and response JSON.
+    Returns (ok, commit_url_or_error_text).
     """
     payload = {
         "message": message,
@@ -90,20 +96,26 @@ def gh_put_file_with_commit(path: str, branch: str, content_bytes: bytes, messag
         payload["sha"] = sha
 
     r = requests.put(gh_contents_url(path), headers=gh_headers(), json=payload, timeout=30)
-    info = {"status": r.status_code, "reason": r.reason, "text": (r.text or "")[:1200]}
     try:
         j = r.json()
     except Exception:
         j = {}
-    commit_sha = (j.get("commit") or {}).get("sha") if isinstance(j, dict) else None
-    commit_html = (j.get("commit") or {}).get("html_url") if isinstance(j, dict) else None
-    if not commit_html and commit_sha:
-        commit_html = f"https://github.com/{OWNER_REPO}/commit/{commit_sha}"
-    info.update({"json": j, "commit_sha": commit_sha, "commit_url": commit_html})
-    return (200 <= r.status_code < 300), info
+    if 200 <= r.status_code < 300:
+        # Try to provide a commit URL
+        commit_url = None
+        if isinstance(j, dict) and j.get("commit"):
+            commit_url = j["commit"].get("html_url") or j["commit"].get("sha")
+            if commit_url and not commit_url.startswith("http"):
+                commit_url = f"https://github.com/{OWNER_REPO}/commit/{commit_url}"
+        msg = "Saved to GitHub."
+        if commit_url:
+            msg += f" Commit: {commit_url}"
+        return True, msg
+    else:
+        return False, f"GitHub push failed [{r.status_code} {r.reason}]: {str(j)[:600]}"
 
 # ============================================================
-# SAVED CALCS (LOAD/SAVE)
+# SAVE/LOAD UTILITIES (session-first; optional local mirror)
 # ============================================================
 def empty_saved() -> dict:
     return {s: [] for s in SHAPES}
@@ -116,18 +128,11 @@ def normalize_saved(d: dict) -> dict:
                 out[s] = d[s]
     return out
 
-def load_saved_from_repo_or_local() -> dict:
+def load_initial_saved() -> dict:
     """
-    Prefer GitHub (if token present). Otherwise, try local file.
-    Always returns a normalized dict with all shape buckets.
+    Use a local file if present; otherwise start with empty buckets.
+    We avoid fetching from GitHub to keep logic simple/fast.
     """
-    if token_present():
-        ok, txt = gh_download_text(GH_FILEPATH, BRANCH)
-        if ok:
-            try:
-                return normalize_saved(json.loads(txt))
-            except Exception:
-                pass
     if LOCAL_SAVED_PATH.exists():
         try:
             return normalize_saved(json.loads(LOCAL_SAVED_PATH.read_text("utf-8")))
@@ -135,44 +140,9 @@ def load_saved_from_repo_or_local() -> dict:
             pass
     return empty_saved()
 
-def write_local(saved: dict) -> tuple[bool, str]:
-    try:
-        LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LOCAL_SAVED_PATH.write_text(json.dumps(saved, indent=2), encoding="utf-8")
-        return True, "Local JSON updated."
-    except Exception as e:
-        return False, f"Local write failed: {e}"
-
-def save_to_repo_and_reload(saved: dict) -> tuple[bool, str]:
-    """
-    Push current 'saved' to GitHub and immediately reload from the repo.
-    Shows commit link in the success message if available.
-    """
-    if not token_present():
-        return False, "GITHUB_TOKEN missing in Streamlit secrets."
-
-    content = json.dumps(saved, indent=2).encode("utf-8")
-    ok, info = gh_put_file_with_commit(GH_FILEPATH, BRANCH, content, "Update saved_calcs via Streamlit app")
-    if not ok:
-        return False, f"GitHub push failed [{info.get('status')} {info.get('reason')}]: {info.get('text')}"
-
-    time.sleep(0.6)  # avoid read-after-write race
-
-    rr = requests.get(RAW_URL, timeout=20)
-    if not rr.ok:
-        return False, f"Reload failed: {rr.status_code} {rr.reason}"
-
-    try:
-        fresh = json.loads(rr.text)
-    except Exception as e:
-        return False, f"Reload parse failed: {e}"
-
-    st.session_state.saved = normalize_saved(fresh)
-
-    msg = "Saved to GitHub and reloaded."
-    if info.get("commit_url"):
-        msg += f" Commit: {info['commit_url']}"
-    return True, msg
+def write_local(saved: dict) -> None:
+    LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LOCAL_SAVED_PATH.write_text(json.dumps(saved, indent=2), encoding="utf-8")
 
 # ============================================================
 # GEOMETRY / WEIGHT FUNCTIONS
@@ -234,7 +204,8 @@ def mother_pipe_diameter(area_mm2, thickness):
 # SESSION BOOT
 # ============================================================
 if "saved" not in st.session_state:
-    st.session_state.saved = load_saved_from_repo_or_local()
+    # Start from local file or empty (we don't reload from GitHub here)
+    st.session_state.saved = load_initial_saved()
 if "last_result" not in st.session_state:
     st.session_state.last_result = None  # holds the most recent calculation result
 
@@ -256,12 +227,12 @@ with col_logo:
 st.caption("Calculates weight per meter and, for non-circular shapes, the equivalent circular **mother pipe** OD.")
 
 # ============================================================
-# SIDEBAR: SAVED LIST
+# SIDEBAR: SAVED LIST (reflects st.session_state.saved directly)
 # ============================================================
 st.sidebar.header("Saved Calculations")
 for s in SHAPES:
     entries = st.session_state.saved.get(s, [])
-    with st.sidebar.expander(f"{s} ({len(entries)})", expanded=False):
+    with st.sidebar.expander(f"{s} ({len(entries)})", expanded=(len(entries) > 0)):
         if not entries:
             st.caption("No saved items yet.")
         else:
@@ -279,19 +250,24 @@ for s in SHAPES:
                 with cols[1]:
                     if st.button("🗑️", key=f"del_{s}_{idx}"):
                         st.session_state.saved[s].pop(idx)
+                        # Optional local mirror
                         try:
-                            _okL, _msgL = write_local(st.session_state.saved)
-                            st.toast(_msgL)
+                            write_local(st.session_state.saved)
                         except Exception:
                             pass
-                        okG, msgG = save_to_repo_and_reload(st.session_state.saved)
-                        st.toast(msgG)
+                        # Push to GitHub (no reload)
+                        if token_present():
+                            ok, msg = gh_put_file_with_commit(
+                                GH_FILEPATH,
+                                BRANCH,
+                                json.dumps(st.session_state.saved, indent=2).encode("utf-8"),
+                                "Delete saved calc via app",
+                            )
+                            if ok:
+                                st.toast(msg)
+                            else:
+                                st.toast(msg)
                         st.rerun()
-
-# Optional manual reload button
-if st.sidebar.button("Reload saved from repo"):
-    st.session_state.saved = load_saved_from_repo_or_local()
-    st.rerun()
 
 # ============================================================
 # INPUTS
@@ -419,37 +395,47 @@ if st.button("Calculate", type="primary"):
         st.info(f"Mother Pipe OD: **{mp_od:.2f} mm**, ID: **{mp_od - 2*t:.2f} mm**")
 
 # ============================================================
-# SAVE PANEL (always available when a result exists)
+# SAVE PANEL (wide; always available when a result exists)
 # ============================================================
 if st.session_state.last_result:
-    st.markdown("---")
-    st.subheader("Save this calculation")
+    st.markdown("### Save this calculation")
+    with st.container():
+        st.markdown('<div class="save-panel">', unsafe_allow_html=True)
 
-    default_name = f"{st.session_state.last_result['shape']} | {st.session_state.last_result['dimensions_str']}"
-    save_name = st.text_input("Name this calculation", value=default_name, key="save_name_input")
+        default_name = f"{st.session_state.last_result['shape']} | {st.session_state.last_result['dimensions_str']}"
+        save_name = st.text_input("Name", value=default_name, key="save_name_input")
 
-    if st.button("Save", key="save_btn"):
-        # Append to in-session data first
-        shape_key = st.session_state.last_result["shape"]
-        record = dict(st.session_state.last_result)
-        record["name"] = save_name
+        if st.button("Save", key="save_btn", type="primary"):
+            # 1) Update session immediately
+            shape_key = st.session_state.last_result["shape"]
+            record = dict(st.session_state.last_result)
+            record["name"] = save_name
+            st.session_state.saved[shape_key].append(record)
 
-        st.session_state.saved[shape_key].append(record)
+            # 2) Optional local mirror for dev
+            try:
+                write_local(st.session_state.saved)
+            except Exception:
+                pass
 
-        # Optional local mirror (useful in local dev)
-        try:
-            _okL, _msgL = write_local(st.session_state.saved)
-            if _okL:
-                st.toast(_msgL)
-        except Exception:
-            pass
+            # 3) Push to GitHub (no reload)
+            if token_present():
+                ok, msg = gh_put_file_with_commit(
+                    GH_FILEPATH,
+                    BRANCH,
+                    json.dumps(st.session_state.saved, indent=2).encode("utf-8"),
+                    "Save calc via app",
+                )
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+            else:
+                st.info("Saved locally (no GITHUB_TOKEN present).")
 
-        # Push to GitHub and immediately reload from repo (canonical)
-        okG, msgG = save_to_repo_and_reload(st.session_state.saved)
-        if okG:
-            st.success(msgG)
-            st.rerun()  # refresh sidebar with reloaded data
-        else:
-            st.error(msgG)
+            # 4) Force UI refresh so sidebar shows the new item count
+            st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
 else:
     st.info("Enter dimensions and click **Calculate** to enable saving.")
