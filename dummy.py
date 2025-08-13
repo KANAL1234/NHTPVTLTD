@@ -1,7 +1,7 @@
 # app.py
 # Pipe & Hollow Section Weight Calculator
-# - Saves/loads data to GitHub JSON (with detailed error reporting)
-# - Uses a repo-only logo (assets/logo.png)
+# - Persists to GitHub JSON and auto-reloads from repo after save
+# - Repo-only logo (assets/logo.png)
 
 import base64
 import json
@@ -14,29 +14,27 @@ import streamlit as st
 from PIL import Image
 
 # ============================================================
-# HARD-CODED REPO SETTINGS FOR YOUR APP
+# HARD-CODED REPO SETTINGS
 # ============================================================
-OWNER_REPO = "KANAL1234/NHTPVTLTD"     # <owner>/<repo>
-BRANCH = "main"                        # branch to read/write
-GH_FILEPATH = "assets/saved_calcs.json"  # JSON we persist to
-REPO_LOGO_PATH = Path("assets/logo.png")  # logo inside repo
+OWNER_REPO = "KANAL1234/NHTPVTLTD"        # <owner>/<repo>
+BRANCH = "main"                           # branch to read/write
+GH_FILEPATH = "assets/saved_calcs.json"   # JSON persisted file
+REPO_LOGO_PATH = Path("assets/logo.png")  # logo path inside repo
 
 # ============================================================
 # APP CONSTANTS
 # ============================================================
 DENSITY_MS = 7850
 SHAPES = ["Circle", "Square", "Rectangle", "Oval", "Triangle"]
-LOCAL_SAVED_PATH = Path(GH_FILEPATH)  # same path locally
+LOCAL_SAVED_PATH = Path(GH_FILEPATH)  # local mirror path
 
 # ============================================================
-# GITHUB API HELPERS  (with detailed error info)
+# GITHUB API HELPERS (with readable errors)
 # ============================================================
 def token_present() -> bool:
-    """Return True if a GitHub token is present in Streamlit secrets."""
     return "GITHUB_TOKEN" in st.secrets and bool(st.secrets["GITHUB_TOKEN"])
 
 def gh_headers() -> dict:
-    """Headers for GitHub API calls."""
     return {
         "Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}",
         "Accept": "application/vnd.github+json",
@@ -47,12 +45,10 @@ def gh_contents_url(path: str) -> str:
     return f"https://api.github.com/repos/{OWNER_REPO}/contents/{path}"
 
 def gh_get_contents_response(path: str, branch: str) -> requests.Response:
-    """Raw GET to Contents API (returns Response so we can display errors)."""
     params = {"ref": branch} if branch else {}
     return requests.get(gh_contents_url(path), headers=gh_headers(), params=params, timeout=20)
 
 def gh_get_file_sha(path: str, branch: str):
-    """Get file SHA if it exists (None if missing or error)."""
     r = gh_get_contents_response(path, branch)
     if r.status_code == 200:
         try:
@@ -61,40 +57,32 @@ def gh_get_file_sha(path: str, branch: str):
             return None
     return None
 
-def gh_download_text(path: str, branch: str) -> tuple[bool, str, str]:
+def gh_download_text(path: str, branch: str) -> tuple[bool, str]:
     """
-    Try to download file contents (text) from GitHub.
-    Returns (ok, text_or_error, debug_json)
-      - ok=True -> text_or_error is the file text
-      - ok=False -> text_or_error is a readable error string
+    Returns (ok, text_or_error)
     """
     r = gh_get_contents_response(path, branch)
-    try:
-        body_json = r.json() if r.text else {}
-    except Exception:
-        body_json = {"_raw": r.text}
-
     if r.status_code == 200:
         try:
-            if body_json.get("encoding") == "base64":
-                b = base64.b64decode(body_json.get("content", ""))
-                return True, b.decode("utf-8"), json.dumps(body_json)[:800]
-            # Fallback: attempt RAW URL for text
+            body = r.json()
+            if body.get("encoding") == "base64":
+                content_b64 = body.get("content", "")
+                return True, base64.b64decode(content_b64).decode("utf-8")
+            # Fallback to RAW URL
             raw_url = f"https://raw.githubusercontent.com/{OWNER_REPO}/{branch}/{path}"
             rr = requests.get(raw_url, timeout=20)
             if rr.ok:
-                return True, rr.text, json.dumps(body_json)[:800]
-            return False, f"RAW fetch failed: {rr.status_code} {rr.reason}", json.dumps(body_json)[:800]
+                return True, rr.text
+            return False, f"RAW fetch failed: {rr.status_code} {rr.reason}"
         except Exception as e:
-            return False, f"Decode error: {e}", json.dumps(body_json)[:800]
+            return False, f"Decode error: {e}"
     else:
-        # Provide readable error
-        return False, f"{r.status_code} {r.reason}: {body_json}", json.dumps(body_json)[:800]
+        return False, f"{r.status_code} {r.reason}: {r.text[:600]}"
 
-def gh_put_file(path: str, branch: str, content_bytes: bytes, message: str) -> tuple[bool, dict]:
+def gh_put_file(path: str, branch: str, content_bytes: bytes, message: str) -> tuple[bool, str]:
     """
-    Create/update a file through the Contents API.
-    Returns (ok, info_dict) with detailed info for UI.
+    Create/update a file through GitHub Contents API.
+    Returns (ok, message)
     """
     url = gh_contents_url(path)
     payload = {
@@ -107,16 +95,9 @@ def gh_put_file(path: str, branch: str, content_bytes: bytes, message: str) -> t
         payload["sha"] = sha
 
     r = requests.put(url, headers=gh_headers(), json=payload, timeout=30)
-    info = {
-        "ok": 200 <= r.status_code < 300,
-        "status": r.status_code,
-        "reason": r.reason,
-        "text": (r.text or "")[:1200],
-        "target": f"{OWNER_REPO}@{branch}:{path}",
-        "used_sha": sha,
-        "payload_keys": list(payload.keys()),
-    }
-    return info["ok"], info
+    if 200 <= r.status_code < 300:
+        return True, "Saved & synced to GitHub."
+    return False, f"GitHub push failed [{r.status_code} {r.reason}]: {r.text[:600]}"
 
 # ============================================================
 # SAVED CALCS (LOAD/SAVE)
@@ -132,58 +113,55 @@ def normalize_saved(d: dict) -> dict:
                 out[s] = d[s]
     return out
 
-def load_saved() -> tuple[dict, list[str]]:
+def load_saved_from_repo_or_local() -> dict:
     """
-    Load saved calcs, preferring GitHub (if token present),
-    else local file. Returns (saved_dict, logs)
+    Prefer GitHub (if token present). Otherwise, try local file.
+    Always returns a normalized dict with all shape buckets.
     """
-    logs = []
-    # Try GitHub first (if token)
+    # Try GitHub
     if token_present():
-        ok, txt_or_err, dbg = gh_download_text(GH_FILEPATH, BRANCH)
-        logs.append(f"GitHub read -> ok={ok}")
+        ok, txt = gh_download_text(GH_FILEPATH, BRANCH)
         if ok:
             try:
-                data = json.loads(txt_or_err)
-                return normalize_saved(data), logs
-            except Exception as e:
-                logs.append(f"GitHub JSON parse error: {e}")
-        else:
-            logs.append(f"GitHub read error: {txt_or_err}")
-
-    # Fallback: local file (exists in the repo build image)
+                return normalize_saved(json.loads(txt))
+            except Exception:
+                pass
+    # Fallback to local file (present on deployment)
     if LOCAL_SAVED_PATH.exists():
         try:
-            with open(LOCAL_SAVED_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return normalize_saved(data), logs
-        except Exception as e:
-            logs.append(f"Local read error: {e}")
-
-    logs.append("No saved data found; starting fresh.")
-    return empty_saved(), logs
+            return normalize_saved(json.loads(LOCAL_SAVED_PATH.read_text("utf-8")))
+        except Exception:
+            pass
+    return empty_saved()
 
 def write_local(saved: dict) -> tuple[bool, str]:
     try:
         LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOCAL_SAVED_PATH, "w", encoding="utf-8") as f:
-            json.dump(saved, f, indent=2)
+        LOCAL_SAVED_PATH.write_text(json.dumps(saved, indent=2), encoding="utf-8")
         return True, "Local JSON updated."
     except Exception as e:
         return False, f"Local write failed: {e}"
 
-def write_github(saved: dict) -> tuple[bool, str, dict]:
+def save_to_repo_and_reload(saved: dict) -> tuple[bool, str]:
+    """
+    Push current 'saved' to GitHub and immediately reload fresh data
+    from the repo, then update st.session_state.saved.
+    """
     if not token_present():
-        return False, "GitHub token missing in secrets (GITHUB_TOKEN).", {}
-    try:
-        content = json.dumps(saved, indent=2).encode("utf-8")
-        ok, info = gh_put_file(GH_FILEPATH, BRANCH, content, "Update saved_calcs via Streamlit app")
-        if ok:
-            return True, "Saved & synced to GitHub.", info
-        else:
-            return False, f"GitHub push failed [{info.get('status')} {info.get('reason')}]: {info.get('text')}", info
-    except Exception as e:
-        return False, f"GitHub push exception: {e}", {}
+        return False, "GitHub token missing in secrets (GITHUB_TOKEN)."
+
+    content = json.dumps(saved, indent=2).encode("utf-8")
+    ok, msg = gh_put_file(GH_FILEPATH, BRANCH, content, "Update saved_calcs via Streamlit app")
+    if not ok:
+        return False, msg
+
+    # Small delay helps avoid race with GitHub read-after-write
+    time.sleep(0.5)
+
+    # Reload from repo to reflect canonical state
+    fresh = load_saved_from_repo_or_local()
+    st.session_state.saved = fresh
+    return True, "Saved to GitHub and reloaded from repo."
 
 # ============================================================
 # GEOMETRY / WEIGHT FUNCTIONS
@@ -245,10 +223,7 @@ def mother_pipe_diameter(area_mm2, thickness):
 # SESSION BOOT
 # ============================================================
 if "saved" not in st.session_state:
-    saved_data, load_logs = load_saved()
-    st.session_state.saved = saved_data
-else:
-    load_logs = ["Session already had saved data."]
+    st.session_state.saved = load_saved_from_repo_or_local()
 
 # ============================================================
 # HEADER (logo from repo only)
@@ -291,11 +266,17 @@ for s in SHAPES:
                 with cols[1]:
                     if st.button("🗑️", key=f"del_{s}_{idx}"):
                         st.session_state.saved[s].pop(idx)
-                        ok_local, msg_local = write_local(st.session_state.saved)
-                        ok_gh, msg_gh, info = write_github(st.session_state.saved)
-                        st.toast(msg_local)
-                        st.toast(msg_gh)
+                        # Persist local + repo and reload
+                        _okL, _msgL = write_local(st.session_state.saved)
+                        okG, msgG = save_to_repo_and_reload(st.session_state.saved)
+                        st.toast(_msgL)
+                        st.toast(msgG)
                         st.rerun()
+
+# Optional manual reload button
+if st.sidebar.button("Reload saved from repo"):
+    st.session_state.saved = load_saved_from_repo_or_local()
+    st.rerun()
 
 # ============================================================
 # INPUTS
@@ -441,77 +422,19 @@ if st.button("Calculate", type="primary"):
             "extra": result["extra"],
             "dimensions_str": result["dimensions_str"],
         }
-        # Append in-session
+
+        # Append in-session first
         st.session_state.saved[result["shape"]].append(record)
 
-        # Write locally (works in local dev / ephemeral in cloud)
-        ok_local, msg_local = write_local(st.session_state.saved)
-        st.toast(msg_local)
+        # Write local (dev convenience)
+        _okL, _msgL = write_local(st.session_state.saved)
+        if _okL:
+            st.toast(_msgL)
 
-        # Push to GitHub
-        ok_gh, msg_gh, info = write_github(st.session_state.saved)
-        if ok_gh:
-            st.success(msg_gh)
+        # Push to GitHub and auto-reload from repo, then rerun for fresh sidebar
+        okG, msgG = save_to_repo_and_reload(st.session_state.saved)
+        if okG:
+            st.success(msgG)
+            st.rerun()
         else:
-            st.error(msg_gh)
-            # show more details for debugging
-            with st.expander("GitHub error details"):
-                st.json(info)
-
-# ============================================================
-# DIAGNOSTICS PANEL
-# ============================================================
-with st.expander("Diagnostics"):
-    colA, colB = st.columns(2)
-    with colA:
-        st.write("**Repo**:", OWNER_REPO)
-        st.write("**Branch**:", BRANCH)
-        st.write("**File path**:", GH_FILEPATH)
-        st.write("**Token configured**:", "✅" if token_present() else "❌")
-        st.write("**Local JSON path exists**:", "✅" if LOCAL_SAVED_PATH.exists() else "❌")
-    with colB:
-        st.write("**Load logs**:")
-        for line in (load_logs if isinstance(load_logs, list) else [str(load_logs)]):
-            st.write("-", line)
-
-    st.markdown("**Quick API Read Check**")
-    if token_present():
-        r = gh_get_contents_response(GH_FILEPATH, BRANCH)
-        st.write("GET status:", f"{r.status_code} {r.reason}")
-        try:
-            st.code((r.text or "")[:800], language="json")
-        except Exception:
-            st.write("No response body.")
-    else:
-        st.info("Add GITHUB_TOKEN in Streamlit secrets to enable GitHub read/write.")
-
-    st.markdown("---")
-    st.markdown("**Test write (append timestamp to _debug)**")
-    if st.button("Run test write"):
-        # Pull current JSON from GitHub or local
-        current = {}
-        if token_present():
-            ok, txt, _dbg = gh_download_text(GH_FILEPATH, BRANCH)
-            if ok:
-                try:
-                    current = json.loads(txt)
-                except Exception:
-                    current = {}
-        elif LOCAL_SAVED_PATH.exists():
-            try:
-                current = json.loads(Path(LOCAL_SAVED_PATH).read_text("utf-8"))
-            except Exception:
-                current = {}
-
-        if not isinstance(current, dict):
-            current = {}
-        current.setdefault("_debug", []).append({"ts": time.time()})
-
-        # Try to write both locally & to GitHub
-        ok_local, msg_local = write_local(current)
-        st.write("Local write:", ok_local, msg_local)
-
-        ok_gh, msg_gh, info = write_github(current)
-        st.write("GitHub write:", ok_gh, msg_gh)
-        if not ok_gh:
-            st.json(info)
+            st.error(msgG)
