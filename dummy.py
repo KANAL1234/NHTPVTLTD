@@ -1,7 +1,7 @@
 # app.py
 # Pipe & Hollow Section Weight Calculator
-# - Persists to GitHub (assets/saved_calcs.json)
-# - Reloads from repo after save, shows commit link
+# - FIXED: Calculate stores to session; Save panel is outside the Calculate block
+# - Persists to GitHub (assets/saved_calcs.json), reloads from RAW, shows commit link
 # - Repo-only logo (assets/logo.png)
 
 import base64
@@ -66,7 +66,6 @@ def gh_download_text(path: str, branch: str) -> tuple[bool, str]:
             if body.get("encoding") == "base64":
                 content_b64 = body.get("content", "")
                 return True, base64.b64decode(content_b64).decode("utf-8")
-            # Fallback to RAW URL
             rr = requests.get(RAW_URL, timeout=20)
             if rr.ok:
                 return True, rr.text
@@ -122,7 +121,6 @@ def load_saved_from_repo_or_local() -> dict:
     Prefer GitHub (if token present). Otherwise, try local file.
     Always returns a normalized dict with all shape buckets.
     """
-    # Try GitHub
     if token_present():
         ok, txt = gh_download_text(GH_FILEPATH, BRANCH)
         if ok:
@@ -130,7 +128,6 @@ def load_saved_from_repo_or_local() -> dict:
                 return normalize_saved(json.loads(txt))
             except Exception:
                 pass
-    # Fallback to local file (present on deployment)
     if LOCAL_SAVED_PATH.exists():
         try:
             return normalize_saved(json.loads(LOCAL_SAVED_PATH.read_text("utf-8")))
@@ -159,10 +156,8 @@ def save_to_repo_and_reload(saved: dict) -> tuple[bool, str]:
     if not ok:
         return False, f"GitHub push failed [{info.get('status')} {info.get('reason')}]: {info.get('text')}"
 
-    # Slight delay to avoid read-after-write race
-    time.sleep(0.6)
+    time.sleep(0.6)  # avoid read-after-write race
 
-    # Reload from RAW
     rr = requests.get(RAW_URL, timeout=20)
     if not rr.ok:
         return False, f"Reload failed: {rr.status_code} {rr.reason}"
@@ -172,7 +167,6 @@ def save_to_repo_and_reload(saved: dict) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Reload parse failed: {e}"
 
-    # Normalize and update session
     st.session_state.saved = normalize_saved(fresh)
 
     msg = "Saved to GitHub and reloaded."
@@ -241,6 +235,8 @@ def mother_pipe_diameter(area_mm2, thickness):
 # ============================================================
 if "saved" not in st.session_state:
     st.session_state.saved = load_saved_from_repo_or_local()
+if "last_result" not in st.session_state:
+    st.session_state.last_result = None  # holds the most recent calculation result
 
 # ============================================================
 # HEADER (logo from repo only)
@@ -337,16 +333,15 @@ if st.session_state.get("trigger_load"):
     st.session_state["trigger_load"] = False
 
 # ============================================================
-# CALCULATE
+# CALCULATE (stores result in session)
 # ============================================================
 if st.button("Calculate", type="primary"):
-    result = {}
     t = st.session_state["thk_input"]
     den = st.session_state["den_input"]
 
     if shape == "Circle":
         w, area, ID = weight_circle(st.session_state["circle_OD"], t, den)
-        result = {
+        st.session_state.last_result = {
             "shape": "Circle",
             "inputs": {"OD": st.session_state["circle_OD"]},
             "thickness": t,
@@ -362,7 +357,7 @@ if st.button("Calculate", type="primary"):
     elif shape == "Square":
         w, area = weight_square(st.session_state["square_OD"], t, den)
         mp_od = mother_pipe_diameter(area, t)
-        result = {
+        st.session_state.last_result = {
             "shape": "Square",
             "inputs": {"OD": st.session_state["square_OD"]},
             "thickness": t,
@@ -378,7 +373,7 @@ if st.button("Calculate", type="primary"):
     elif shape == "Rectangle":
         w, area = weight_rectangle(st.session_state["rect_L"], st.session_state["rect_W"], t, den)
         mp_od = mother_pipe_diameter(area, t)
-        result = {
+        st.session_state.last_result = {
             "shape": "Rectangle",
             "inputs": {"L": st.session_state["rect_L"], "W": st.session_state["rect_W"]},
             "thickness": t,
@@ -394,7 +389,7 @@ if st.button("Calculate", type="primary"):
     elif shape == "Oval":
         w, area = weight_oval(st.session_state["oval_major"], st.session_state["oval_minor"], t, den)
         mp_od = mother_pipe_diameter(area, t)
-        result = {
+        st.session_state.last_result = {
             "shape": "Oval",
             "inputs": {"major": st.session_state["oval_major"], "minor": st.session_state["oval_minor"]},
             "thickness": t,
@@ -410,7 +405,7 @@ if st.button("Calculate", type="primary"):
     elif shape == "Triangle":
         w, area = weight_triangle(st.session_state["tri_side"], t, den)
         mp_od = mother_pipe_diameter(area, t)
-        result = {
+        st.session_state.last_result = {
             "shape": "Triangle",
             "inputs": {"side": st.session_state["tri_side"]},
             "thickness": t,
@@ -423,27 +418,23 @@ if st.button("Calculate", type="primary"):
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
         st.info(f"Mother Pipe OD: **{mp_od:.2f} mm**, ID: **{mp_od - 2*t:.2f} mm**")
 
-    # ----------------- SAVE AREA -----------------
+# ============================================================
+# SAVE PANEL (always available when a result exists)
+# ============================================================
+if st.session_state.last_result:
     st.markdown("---")
     st.subheader("Save this calculation")
-    default_name = f"{result['shape']} | {result['dimensions_str']}"
+
+    default_name = f"{st.session_state.last_result['shape']} | {st.session_state.last_result['dimensions_str']}"
     save_name = st.text_input("Name this calculation", value=default_name, key="save_name_input")
 
     if st.button("Save", key="save_btn"):
-        record = {
-            "name": save_name,
-            "shape": result["shape"],
-            "inputs": result["inputs"],
-            "thickness": result["thickness"],
-            "density": result["density"],
-            "weight": result["weight"],
-            "area_mm2": result["area_mm2"],
-            "extra": result["extra"],
-            "dimensions_str": result["dimensions_str"],
-        }
-
         # Append to in-session data first
-        st.session_state.saved[result["shape"]].append(record)
+        shape_key = st.session_state.last_result["shape"]
+        record = dict(st.session_state.last_result)
+        record["name"] = save_name
+
+        st.session_state.saved[shape_key].append(record)
 
         # Optional local mirror (useful in local dev)
         try:
@@ -460,3 +451,5 @@ if st.button("Calculate", type="primary"):
             st.rerun()  # refresh sidebar with reloaded data
         else:
             st.error(msgG)
+else:
+    st.info("Enter dimensions and click **Calculate** to enable saving.")
