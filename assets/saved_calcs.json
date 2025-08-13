@@ -2,25 +2,7 @@
   "Circle": [],
   "Square": [],
   "Rectangle": [],
-  "Oval": [
-    {
-      "shape": "Oval",
-      "inputs": {
-        "major": 40.0,
-        "minor": 25.0
-      },
-      "thickness": 1.0,
-      "density": 7850,
-      "weight": 0.7768373234164156,
-      "area_mm2": 98.96016858807843,
-      "extra": {
-        "mother_OD": 32.499999999999986,
-        "mother_ID": 30.499999999999986
-      },
-      "dimensions_str": "40.0 \u00d7 25.0 \u00d7 t 1.0 mm",
-      "name": "Oval | 40.0 \u00d7 25.0 \u00d7 t 1.0 mm"
-    }
-  ],
+  "Oval": [],
   "Triangle": [
     {
       "shape": "Triangle",
