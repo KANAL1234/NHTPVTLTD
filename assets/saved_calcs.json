@@ -1,6 +1,23 @@
 {
   "Circle": [],
-  "Square": [],
+  "Square": [
+    {
+      "shape": "Square",
+      "inputs": {
+        "OD": 25.0
+      },
+      "thickness": 1.0,
+      "density": 7850,
+      "weight": 0.7536,
+      "area_mm2": 96.0,
+      "extra": {
+        "mother_OD": 31.557749073643905,
+        "mother_ID": 29.557749073643905
+      },
+      "dimensions_str": "25.0 \u00d7 25.0 \u00d7 t 1.0 mm",
+      "name": "Square | 25.0 \u00d7 25.0 \u00d7 t 1.0 mm"
+    }
+  ],
   "Rectangle": [],
   "Oval": [],
   "Triangle": []
