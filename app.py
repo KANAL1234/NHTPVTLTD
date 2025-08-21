@@ -346,7 +346,7 @@ if st.button("Calculate", type="primary"):
             "dimensions_str": f"{st.session_state['square_OD']} × {st.session_state['square_OD']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**")
 
     elif shape == "Rectangle":
         w, area = weight_rectangle(st.session_state["rect_L"], st.session_state["rect_W"], t, den)
@@ -363,7 +363,7 @@ if st.button("Calculate", type="primary"):
             "dimensions_str": f"{st.session_state['rect_L']} × {st.session_state['rect_W']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**")
 
     elif shape == "Oval":
         w, area = weight_oval(st.session_state["oval_major"], st.session_state["oval_minor"], t, den)
@@ -383,7 +383,7 @@ if st.button("Calculate", type="primary"):
             "dimensions_str": f"{st.session_state['oval_major']} × {st.session_state['oval_minor']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**")
 
     elif shape == "Triangle":
         w, area = weight_triangle(st.session_state["tri_side"], t, den)
@@ -400,7 +400,7 @@ if st.button("Calculate", type="primary"):
             "dimensions_str": f"Equilateral {st.session_state['tri_side']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**")
 
 # ============================================================
 # SAVE PANEL (wide; always available when a result exists)
