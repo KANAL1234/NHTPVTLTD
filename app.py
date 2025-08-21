@@ -1,11 +1,11 @@
 # app.py
 # Pipe & Hollow Section Weight Calculator
-# - π = 22/7 used EVERYWHERE (weights, areas, ellipse perimeter, etc.)
-# - Mother pipe OD via PERIMETER match, shown to 5 decimal places
-# - After Save: updates sidebar list immediately (no repo reload)
+# - π = 22/7 used EVERYWHERE
+# - Mother pipe OD via PERIMETER match (5 decimal places)
+# - Triangle supports Equilateral and Custom (3 different sides)
+# - After Save: updates sidebar immediately (no repo reload)
 # - Pushes to GitHub (assets/saved_calcs.json) and shows commit link
-# - Wider Save panel styling
-# - Repo-only logo (assets/logo.png)
+# - Wide Save panel styling; repo-only logo
 
 import base64
 import json
@@ -107,7 +107,6 @@ def gh_put_file_with_commit(path: str, branch: str, content_bytes: bytes, messag
     except Exception:
         j = {}
     if 200 <= r.status_code < 300:
-        # Commit URL if available
         commit_url = None
         if isinstance(j, dict) and j.get("commit"):
             commit_url = j["commit"].get("html_url") or j["commit"].get("sha")
@@ -147,8 +146,7 @@ def load_initial_saved() -> dict:
     return empty_saved()
 
 def write_local(saved: dict) -> None:
-    LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True
-    )
+    LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True)
     LOCAL_SAVED_PATH.write_text(json.dumps(saved, indent=2), encoding="utf-8")
 
 # ============================================================
@@ -191,8 +189,8 @@ def weight_oval(major, minor, thickness, density):
     weight = area_mm2 * 1e-6 * density
     return weight, area_mm2
 
-def weight_triangle(side, thickness, density):
-    # Equilateral triangle hollow section
+def weight_triangle_equilateral(side, thickness, density):
+    # Equilateral triangle hollow section via inner parallel offset
     s_o = side
     s_i = side - 2 * thickness / math.sin(math.radians(60))
     if s_i < 0:
@@ -203,6 +201,45 @@ def weight_triangle(side, thickness, density):
     weight = area_mm2 * 1e-6 * density
     return weight, area_mm2
 
+def weight_triangle_general(a, b, c, thickness, density):
+    """
+    Hollow triangle (general scalene) using inward parallel offset (distance = thickness).
+    Outer area A0 from Heron's formula.
+    Inner area A_in = A0 - t*P + t^2 * Σ cot(θ_i/2)
+    For a triangle, Σ cot(θ_i/2) = s^2 / A0  (where s = (a+b+c)/2)
+    => wall area = A0 - A_in = t*P - t^2 * (s^2 / A0)
+
+    Valid only if triangle inequality holds and thickness < inradius r = A0 / s.
+    Returns (weight_kg_per_m, wall_area_mm2, inradius_r).
+    """
+    # Triangle inequality
+    if a + b <= c or b + c <= a or c + a <= b:
+        return 0.0, 0.0, 0.0  # invalid
+
+    P = a + b + c
+    s = P / 2.0
+
+    # Heron's formula for outer area
+    A0_sq = s * (s - a) * (s - b) * (s - c)
+    if A0_sq <= 0:
+        return 0.0, 0.0, 0.0
+    A0 = math.sqrt(A0_sq)
+
+    # Inradius
+    r = A0 / s
+
+    # Thickness must be less than inradius
+    if thickness >= r:
+        return 0.0, 0.0, r
+
+    # Wall (material) area:
+    wall_area = thickness * P - (thickness ** 2) * (s ** 2 / A0)
+    if wall_area <= 0:
+        return 0.0, 0.0, r
+
+    weight = wall_area * 1e-6 * density
+    return weight, wall_area, r
+
 # Mother Pipe OD from PERIMETER (π = 22/7)
 def mother_od_from_perimeter(shape: str, inputs: dict) -> float:
     if shape == "Square":
@@ -210,13 +247,16 @@ def mother_od_from_perimeter(shape: str, inputs: dict) -> float:
     elif shape == "Rectangle":
         P = 2 * (inputs["L"] + inputs["W"])
     elif shape == "Oval":
-        # Ramanujan’s 1st perimeter approximation with π=22/7
+        # Ramanujan’s 1st perimeter approximation using π=22/7
         a = inputs["major"] / 2
         b = inputs["minor"] / 2
-        # Using the common Ramanujan P ≈ π * [3(a+b) - sqrt((3a+b)(a+3b))]
         P = PI * (3*(a+b) - math.sqrt((3*a + b) * (a + 3*b)))
     elif shape == "Triangle":
-        P = 3 * inputs["side"]  # equilateral
+        # Expect either 'side' (equilateral) OR 'a','b','c' (custom)
+        if "side" in inputs:
+            P = 3 * inputs["side"]
+        else:
+            P = inputs["a"] + inputs["b"] + inputs["c"]
     else:
         return 0.0
     return P / PI  # D = P / π
@@ -319,8 +359,42 @@ elif shape == "Oval":
                             value=float(loaded_inputs.get("minor", 25.0)), step=0.5, key="oval_minor")
 
 elif shape == "Triangle":
-    side = st.number_input("Outer Side Length (mm)", min_value=1.0,
-                           value=float(loaded_inputs.get("side", 25.0)), step=0.5, key="tri_side")
+    tri_mode = st.radio(
+        "Triangle type",
+        ["Equilateral", "Custom (3 sides)"],
+        horizontal=True,
+        key="tri_mode",
+    )
+    if tri_mode == "Equilateral":
+        side = st.number_input(
+            "Outer Side Length (mm)",
+            min_value=1.0,
+            value=float(loaded_inputs.get("side", 25.0)),
+            step=0.5,
+            key="tri_side",
+        )
+    else:
+        a = st.number_input(
+            "Side a (mm)",
+            min_value=1.0,
+            value=float(loaded_inputs.get("a", 30.0)),
+            step=0.5,
+            key="tri_a",
+        )
+        b = st.number_input(
+            "Side b (mm)",
+            min_value=1.0,
+            value=float(loaded_inputs.get("b", 40.0)),
+            step=0.5,
+            key="tri_b",
+        )
+        c = st.number_input(
+            "Side c (mm)",
+            min_value=1.0,
+            value=float(loaded_inputs.get("c", 50.0)),
+            step=0.5,
+            key="tri_c",
+        )
 
 if st.session_state.get("trigger_load"):
     st.session_state["trigger_load"] = False
@@ -405,20 +479,49 @@ if st.button("Calculate", type="primary"):
         st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**")
 
     elif shape == "Triangle":
-        w, area = weight_triangle(st.session_state["tri_side"], t, den)
-        mp_od = mother_od_from_perimeter("Triangle", {"side": st.session_state["tri_side"]})
-        st.session_state.last_result = {
-            "shape": "Triangle",
-            "inputs": {"side": st.session_state["tri_side"]},
-            "thickness": t,
-            "density": den,
-            "weight": w,
-            "area_mm2": area,
-            "extra": {"mother_OD": mp_od},
-            "dimensions_str": f"Equilateral {st.session_state['tri_side']} × t {t} mm",
-        }
-        st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**")
+        if st.session_state["tri_mode"] == "Equilateral":
+            a = st.session_state["tri_side"]
+            w, area = weight_triangle_equilateral(a, t, den)
+            mp_od = mother_od_from_perimeter("Triangle", {"side": a})
+            st.session_state.last_result = {
+                "shape": "Triangle",
+                "inputs": {"side": a, "mode": "Equilateral"},
+                "thickness": t,
+                "density": den,
+                "weight": w,
+                "area_mm2": area,
+                "extra": {"mother_OD": mp_od},
+                "dimensions_str": f"Equilateral {a} × t {t} mm",
+            }
+            st.success(f"Weight per meter: **{w:.3f} kg/m**")
+            st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**")
+        else:
+            a = st.session_state["tri_a"]
+            b = st.session_state["tri_b"]
+            c = st.session_state["tri_c"]
+            w, wall_area, r = weight_triangle_general(a, b, c, t, den)
+            if w == 0.0 and wall_area == 0.0:
+                if r == 0.0:
+                    st.error("Invalid triangle sides (triangle inequality not satisfied).")
+                else:
+                    st.error(f"Thickness too large. It must be less than the inradius r = {r:.3f} mm.")
+            else:
+                mp_od = mother_od_from_perimeter("Triangle", {"a": a, "b": b, "c": c})
+                st.session_state.last_result = {
+                    "shape": "Triangle",
+                    "inputs": {"a": a, "b": b, "c": c, "mode": "Custom"},
+                    "thickness": t,
+                    "density": den,
+                    "weight": w,
+                    "area_mm2": wall_area,
+                    "extra": {"mother_OD": mp_od, "inradius": r},
+                    "dimensions_str": f"Sides {a}, {b}, {c} × t {t} mm",
+                }
+                st.success(f"Weight per meter: **{w:.3f} kg/m**")
+                st.info(
+                    f"Mother Pipe OD (perimeter match): **{mp_od:.5f} mm**  |  "
+                    f"Inradius r: **{r:.3f} mm**"
+                )
 
 # ============================================================
 # SAVE PANEL (wide; always available when a result exists)
