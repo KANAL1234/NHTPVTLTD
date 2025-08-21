@@ -1,6 +1,7 @@
 # app.py
 # Pipe & Hollow Section Weight Calculator
-# - Mother pipe OD based on PERIMETER equivalence
+# - π = 22/7 used EVERYWHERE (weights, areas, ellipse perimeter, etc.)
+# - Mother pipe OD via PERIMETER match, shown to 5 decimal places
 # - After Save: updates sidebar list immediately (no repo reload)
 # - Pushes to GitHub (assets/saved_calcs.json) and shows commit link
 # - Wider Save panel styling
@@ -56,6 +57,7 @@ REPO_LOGO_PATH = Path("assets/logo.png")  # logo path inside repo
 # ============================================================
 # APP CONSTANTS
 # ============================================================
+PI = 22/7  # use 22/7 everywhere
 DENSITY_MS = 7850
 SHAPES = ["Circle", "Square", "Rectangle", "Oval", "Triangle"]
 LOCAL_SAVED_PATH = Path(GH_FILEPATH)  # optional local mirror (dev)
@@ -105,7 +107,7 @@ def gh_put_file_with_commit(path: str, branch: str, content_bytes: bytes, messag
     except Exception:
         j = {}
     if 200 <= r.status_code < 300:
-        # Try to provide a commit URL
+        # Commit URL if available
         commit_url = None
         if isinstance(j, dict) and j.get("commit"):
             commit_url = j["commit"].get("html_url") or j["commit"].get("sha")
@@ -145,17 +147,18 @@ def load_initial_saved() -> dict:
     return empty_saved()
 
 def write_local(saved: dict) -> None:
-    LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LOCAL_SAVED_PATH.parent.mkdir(parents=True, exist_ok=True
+    )
     LOCAL_SAVED_PATH.write_text(json.dumps(saved, indent=2), encoding="utf-8")
 
 # ============================================================
-# GEOMETRY / WEIGHT FUNCTIONS
+# GEOMETRY / WEIGHT FUNCTIONS (π = 22/7)
 # ============================================================
 def weight_circle(OD, thickness, density):
     ID = OD - 2 * thickness
     if ID < 0:
         return 0.0, 0.0, 0.0
-    area_mm2 = (math.pi / 4) * (OD**2 - ID**2)
+    area_mm2 = (PI / 4) * (OD**2 - ID**2)  # π=22/7
     weight = area_mm2 * 1e-6 * density
     return weight, area_mm2, ID
 
@@ -177,17 +180,19 @@ def weight_rectangle(L, W, thickness, density):
     return weight, area_mm2
 
 def weight_oval(major, minor, thickness, density):
+    # Treat oval as ellipse; area = πab
     a_o = major / 2
     b_o = minor / 2
     a_i = a_o - thickness
     b_i = b_o - thickness
     if a_i < 0 or b_i < 0:
         return 0.0, 0.0
-    area_mm2 = math.pi * a_o * b_o - math.pi * a_i * b_i
+    area_mm2 = PI * a_o * b_o - PI * a_i * b_i  # π = 22/7
     weight = area_mm2 * 1e-6 * density
     return weight, area_mm2
 
 def weight_triangle(side, thickness, density):
+    # Equilateral triangle hollow section
     s_o = side
     s_i = side - 2 * thickness / math.sin(math.radians(60))
     if s_i < 0:
@@ -198,12 +203,23 @@ def weight_triangle(side, thickness, density):
     weight = area_mm2 * 1e-6 * density
     return weight, area_mm2
 
-# NEW: perimeter → mother pipe OD (perimeter match)
-def mother_od_from_perimeter(perimeter_mm: float) -> float:
-    """Mother pipe OD by matching circumference to the shape's OUTER perimeter."""
-    if perimeter_mm <= 0:
+# Mother Pipe OD from PERIMETER (π = 22/7)
+def mother_od_from_perimeter(shape: str, inputs: dict) -> float:
+    if shape == "Square":
+        P = 4 * inputs["OD"]
+    elif shape == "Rectangle":
+        P = 2 * (inputs["L"] + inputs["W"])
+    elif shape == "Oval":
+        # Ramanujan’s 1st perimeter approximation with π=22/7
+        a = inputs["major"] / 2
+        b = inputs["minor"] / 2
+        # Using the common Ramanujan P ≈ π * [3(a+b) - sqrt((3a+b)(a+3b))]
+        P = PI * (3*(a+b) - math.sqrt((3*a + b) * (a + 3*b)))
+    elif shape == "Triangle":
+        P = 3 * inputs["side"]  # equilateral
+    else:
         return 0.0
-    return perimeter_mm / math.pi
+    return P / PI  # D = P / π
 
 # ============================================================
 # SESSION BOOT
@@ -211,7 +227,7 @@ def mother_od_from_perimeter(perimeter_mm: float) -> float:
 if "saved" not in st.session_state:
     st.session_state.saved = load_initial_saved()  # local or empty
 if "last_result" not in st.session_state:
-    st.session_state.last_result = None  # holds the most recent calculation result
+    st.session_state.last_result = None  # last calculation result
 
 # ============================================================
 # HEADER (logo from repo only)
@@ -228,7 +244,7 @@ with col_logo:
     else:
         st.caption("Add assets/logo.png to your repo for a header logo.")
 
-st.caption("Calculates weight per meter and, for non-circular shapes, the equivalent circular **mother pipe** OD (perimeter match).")
+st.caption("Calculates weight per meter and, for non-circular shapes, the equivalent circular mother pipe OD (perimeter match, π=22/7).")
 
 # ============================================================
 # SIDEBAR: SAVED LIST (reflects st.session_state.saved directly)
@@ -254,7 +270,7 @@ for s in SHAPES:
                 with cols[1]:
                     if st.button("🗑️", key=f"del_{s}_{idx}"):
                         st.session_state.saved[s].pop(idx)
-                        # Optional local mirror
+                        # Local mirror (optional)
                         try:
                             write_local(st.session_state.saved)
                         except Exception:
@@ -329,12 +345,14 @@ if st.button("Calculate", type="primary"):
             "dimensions_str": f"OD {st.session_state['circle_OD']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Inner Diameter: **{ID:.2f} mm**  |  Mother Pipe OD: **{st.session_state['circle_OD']:.2f} mm**")
+        st.info(
+            f"Inner Diameter: **{ID:.2f} mm**  |  "
+            f"Mother Pipe OD: **{st.session_state['circle_OD']:.5f} mm**"
+        )
 
     elif shape == "Square":
         w, area = weight_square(st.session_state["square_OD"], t, den)
-        perim = 4 * st.session_state["square_OD"]
-        mp_od = mother_od_from_perimeter(perim)
+        mp_od = mother_od_from_perimeter("Square", {"OD": st.session_state["square_OD"]})
         st.session_state.last_result = {
             "shape": "Square",
             "inputs": {"OD": st.session_state["square_OD"]},
@@ -350,8 +368,10 @@ if st.button("Calculate", type="primary"):
 
     elif shape == "Rectangle":
         w, area = weight_rectangle(st.session_state["rect_L"], st.session_state["rect_W"], t, den)
-        perim = 2 * (st.session_state["rect_L"] + st.session_state["rect_W"])
-        mp_od = mother_od_from_perimeter(perim)
+        mp_od = mother_od_from_perimeter(
+            "Rectangle",
+            {"L": st.session_state["rect_L"], "W": st.session_state["rect_W"]},
+        )
         st.session_state.last_result = {
             "shape": "Rectangle",
             "inputs": {"L": st.session_state["rect_L"], "W": st.session_state["rect_W"]},
@@ -367,11 +387,10 @@ if st.button("Calculate", type="primary"):
 
     elif shape == "Oval":
         w, area = weight_oval(st.session_state["oval_major"], st.session_state["oval_minor"], t, den)
-        a = st.session_state["oval_major"] / 2.0
-        b = st.session_state["oval_minor"] / 2.0
-        # Ramanujan (first) approximation for ellipse perimeter
-        perim = math.pi * (3*(a+b) - math.sqrt((3*a+b)*(a+3*b)))
-        mp_od = mother_od_from_perimeter(perim)
+        mp_od = mother_od_from_perimeter(
+            "Oval",
+            {"major": st.session_state["oval_major"], "minor": st.session_state["oval_minor"]},
+        )
         st.session_state.last_result = {
             "shape": "Oval",
             "inputs": {"major": st.session_state["oval_major"], "minor": st.session_state["oval_minor"]},
@@ -387,8 +406,7 @@ if st.button("Calculate", type="primary"):
 
     elif shape == "Triangle":
         w, area = weight_triangle(st.session_state["tri_side"], t, den)
-        perim = 3 * st.session_state["tri_side"]  # equilateral
-        mp_od = mother_od_from_perimeter(perim)
+        mp_od = mother_od_from_perimeter("Triangle", {"side": st.session_state["tri_side"]})
         st.session_state.last_result = {
             "shape": "Triangle",
             "inputs": {"side": st.session_state["tri_side"]},
