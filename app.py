@@ -1,5 +1,6 @@
 # app.py
 # Pipe & Hollow Section Weight Calculator
+# - Mother pipe OD based on PERIMETER equivalence
 # - After Save: updates sidebar list immediately (no repo reload)
 # - Pushes to GitHub (assets/saved_calcs.json) and shows commit link
 # - Wider Save panel styling
@@ -8,7 +9,6 @@
 import base64
 import json
 import math
-import time
 from pathlib import Path
 
 import requests
@@ -26,7 +26,7 @@ st.markdown(
         padding: 1rem 1.25rem;
         border: 1px solid rgba(49,51,63,0.2);
         border-radius: 10px;
-        margin-top: 0.75rem;
+        margin-top: 0.25rem;
         margin-bottom: 0.75rem;
       }
       /* tighten spacing for the Name input */
@@ -37,7 +37,9 @@ st.markdown(
       .save-panel .stTextInput {
         margin-top: -1.2rem !important;
         padding-top: 0 !important;
+        max-width: 1000px;
       }
+      .block-container { padding-top: 1rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -107,7 +109,7 @@ def gh_put_file_with_commit(path: str, branch: str, content_bytes: bytes, messag
         commit_url = None
         if isinstance(j, dict) and j.get("commit"):
             commit_url = j["commit"].get("html_url") or j["commit"].get("sha")
-            if commit_url and not commit_url.startswith("http"):
+            if commit_url and not str(commit_url).startswith("http"):
                 commit_url = f"https://github.com/{OWNER_REPO}/commit/{commit_url}"
         msg = "Saved to GitHub."
         if commit_url:
@@ -196,18 +198,18 @@ def weight_triangle(side, thickness, density):
     weight = area_mm2 * 1e-6 * density
     return weight, area_mm2
 
-def mother_pipe_diameter(area_mm2, thickness):
-    if thickness <= 0:
+# NEW: perimeter → mother pipe OD (perimeter match)
+def mother_od_from_perimeter(perimeter_mm: float) -> float:
+    """Mother pipe OD by matching circumference to the shape's OUTER perimeter."""
+    if perimeter_mm <= 0:
         return 0.0
-    # From A = π * t * (OD - t)  =>  OD = A/(π t) + t
-    return (area_mm2 / (math.pi * thickness)) + thickness
+    return perimeter_mm / math.pi
 
 # ============================================================
 # SESSION BOOT
 # ============================================================
 if "saved" not in st.session_state:
-    # Start from local file or empty (we don't reload from GitHub here)
-    st.session_state.saved = load_initial_saved()
+    st.session_state.saved = load_initial_saved()  # local or empty
 if "last_result" not in st.session_state:
     st.session_state.last_result = None  # holds the most recent calculation result
 
@@ -226,7 +228,7 @@ with col_logo:
     else:
         st.caption("Add assets/logo.png to your repo for a header logo.")
 
-st.caption("Calculates weight per meter and, for non-circular shapes, the equivalent circular **mother pipe** OD.")
+st.caption("Calculates weight per meter and, for non-circular shapes, the equivalent circular **mother pipe** OD (perimeter match).")
 
 # ============================================================
 # SIDEBAR: SAVED LIST (reflects st.session_state.saved directly)
@@ -265,10 +267,7 @@ for s in SHAPES:
                                 json.dumps(st.session_state.saved, indent=2).encode("utf-8"),
                                 "Delete saved calc via app",
                             )
-                            if ok:
-                                st.toast(msg)
-                            else:
-                                st.toast(msg)
+                            st.toast(msg if ok else msg)
                         st.rerun()
 
 # ============================================================
@@ -326,15 +325,16 @@ if st.button("Calculate", type="primary"):
             "density": den,
             "weight": w,
             "area_mm2": area,
-            "extra": {"ID": ID},
+            "extra": {"ID": ID, "mother_OD": st.session_state["circle_OD"]},
             "dimensions_str": f"OD {st.session_state['circle_OD']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Inner Diameter: **{ID:.2f} mm**")
+        st.info(f"Inner Diameter: **{ID:.2f} mm**  |  Mother Pipe OD: **{st.session_state['circle_OD']:.2f} mm**")
 
     elif shape == "Square":
         w, area = weight_square(st.session_state["square_OD"], t, den)
-        mp_od = mother_pipe_diameter(area, t)
+        perim = 4 * st.session_state["square_OD"]
+        mp_od = mother_od_from_perimeter(perim)
         st.session_state.last_result = {
             "shape": "Square",
             "inputs": {"OD": st.session_state["square_OD"]},
@@ -342,15 +342,16 @@ if st.button("Calculate", type="primary"):
             "density": den,
             "weight": w,
             "area_mm2": area,
-            "extra": {"mother_OD": mp_od, "mother_ID": mp_od - 2 * t},
+            "extra": {"mother_OD": mp_od},
             "dimensions_str": f"{st.session_state['square_OD']} × {st.session_state['square_OD']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD: **{mp_od:.2f} mm**, ID: **{mp_od - 2*t:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
 
     elif shape == "Rectangle":
         w, area = weight_rectangle(st.session_state["rect_L"], st.session_state["rect_W"], t, den)
-        mp_od = mother_pipe_diameter(area, t)
+        perim = 2 * (st.session_state["rect_L"] + st.session_state["rect_W"])
+        mp_od = mother_od_from_perimeter(perim)
         st.session_state.last_result = {
             "shape": "Rectangle",
             "inputs": {"L": st.session_state["rect_L"], "W": st.session_state["rect_W"]},
@@ -358,15 +359,19 @@ if st.button("Calculate", type="primary"):
             "density": den,
             "weight": w,
             "area_mm2": area,
-            "extra": {"mother_OD": mp_od, "mother_ID": mp_od - 2 * t},
+            "extra": {"mother_OD": mp_od},
             "dimensions_str": f"{st.session_state['rect_L']} × {st.session_state['rect_W']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD: **{mp_od:.2f} mm**, ID: **{mp_od - 2*t:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
 
     elif shape == "Oval":
         w, area = weight_oval(st.session_state["oval_major"], st.session_state["oval_minor"], t, den)
-        mp_od = mother_pipe_diameter(area, t)
+        a = st.session_state["oval_major"] / 2.0
+        b = st.session_state["oval_minor"] / 2.0
+        # Ramanujan (first) approximation for ellipse perimeter
+        perim = math.pi * (3*(a+b) - math.sqrt((3*a+b)*(a+3*b)))
+        mp_od = mother_od_from_perimeter(perim)
         st.session_state.last_result = {
             "shape": "Oval",
             "inputs": {"major": st.session_state["oval_major"], "minor": st.session_state["oval_minor"]},
@@ -374,15 +379,16 @@ if st.button("Calculate", type="primary"):
             "density": den,
             "weight": w,
             "area_mm2": area,
-            "extra": {"mother_OD": mp_od, "mother_ID": mp_od - 2 * t},
+            "extra": {"mother_OD": mp_od},
             "dimensions_str": f"{st.session_state['oval_major']} × {st.session_state['oval_minor']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD: **{mp_od:.2f} mm**, ID: **{mp_od - 2*t:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
 
     elif shape == "Triangle":
         w, area = weight_triangle(st.session_state["tri_side"], t, den)
-        mp_od = mother_pipe_diameter(area, t)
+        perim = 3 * st.session_state["tri_side"]  # equilateral
+        mp_od = mother_od_from_perimeter(perim)
         st.session_state.last_result = {
             "shape": "Triangle",
             "inputs": {"side": st.session_state["tri_side"]},
@@ -390,11 +396,11 @@ if st.button("Calculate", type="primary"):
             "density": den,
             "weight": w,
             "area_mm2": area,
-            "extra": {"mother_OD": mp_od, "mother_ID": mp_od - 2 * t},
+            "extra": {"mother_OD": mp_od},
             "dimensions_str": f"Equilateral {st.session_state['tri_side']} × t {t} mm",
         }
         st.success(f"Weight per meter: **{w:.3f} kg/m**")
-        st.info(f"Mother Pipe OD: **{mp_od:.2f} mm**, ID: **{mp_od - 2*t:.2f} mm**")
+        st.info(f"Mother Pipe OD (perimeter match): **{mp_od:.2f} mm**")
 
 # ============================================================
 # SAVE PANEL (wide; always available when a result exists)
